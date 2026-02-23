@@ -48,9 +48,30 @@ class LLMClient:
 
     def _parse_signals(self, content: str) -> List[Signal]:
         logger = logging.getLogger("LLMClient")
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:].strip()
+
+        def _extract_json_array(text: str) -> str | None:
+            start = text.find("[")
+            end = text.rfind("]")
+            if start == -1 or end == -1 or end <= start:
+                return None
+            return text[start : end + 1]
+
+        payload = None
+        for candidate in (cleaned, _extract_json_array(cleaned)):
+            if not candidate:
+                continue
+            try:
+                payload = json.loads(candidate)
+                break
+            except json.JSONDecodeError:
+                continue
+
+        if payload is None:
             logger.error("LLM signals JSON parse failed. content: %s", content[:500])
             return []
 
