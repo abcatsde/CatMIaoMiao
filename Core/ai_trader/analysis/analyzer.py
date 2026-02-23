@@ -69,7 +69,7 @@ class Analyzer:
         pos_map = {p.symbol: p for p in positions}
 
         lines = []
-        lines.append("规划摘要：")
+        lines.append("规划摘要：===========================")
         for symbol, snap in market_map.items():
             signal = signal_map.get(symbol)
             if not signal:
@@ -112,6 +112,16 @@ class Analyzer:
         lines.append(f"我会在 {self.next_check_seconds} 秒后重新查看走势。")
         return "\n".join(lines)
 
+    def _short_reason(self, reason: str) -> str:
+        text = (reason or "").strip()
+        if not text:
+            return "暂无明显机会"
+        for sep in ("。", "!", "！", "?", "？", "；", ";"):
+            idx = text.find(sep)
+            if idx > 0:
+                return text[: idx + 1]
+        return text[:60]
+
     def _build_inspection_text(self, signals: List[dict]) -> str:
         parts = []
         for s in signals:
@@ -121,6 +131,15 @@ class Analyzer:
             if symbol:
                 parts.append(f"{symbol}/{tf_text}")
         return "，".join(parts)
+
+    def _build_brief_market_note(self, signals: List[dict]) -> str:
+        notes = []
+        for s in signals:
+            symbol = s.get("symbol", "")
+            reason = self._short_reason(s.get("reason", ""))
+            if symbol:
+                notes.append(f"其中{symbol}{reason}")
+        return "；".join(notes)
 
     def analyze(
         self,
@@ -151,10 +170,19 @@ class Analyzer:
         inspection_text = self._build_inspection_text(signals)
 
         if not actionable and not orders:
+            brief_note = self._build_brief_market_note(signals)
             if inspection_text:
-                self.logger.info("查看了：%s", inspection_text)
+                if brief_note:
+                    self.logger.info(
+                        "查看了：%s，%s，我将在 %s 秒后查看。",
+                        inspection_text,
+                        brief_note,
+                        self.next_check_seconds,
+                    )
+                else:
+                    self.logger.info("查看了：%s，我将在 %s 秒后查看。", inspection_text, self.next_check_seconds)
             else:
-                self.logger.info("暂无可用标的。")
+                self.logger.info("暂无可用标的。我将在 %s 秒后查看。", self.next_check_seconds)
             self.logger.debug("Analysis Plan:\n%s", summary.get("plan", ""))
         else:
             action_text = "；".join(
