@@ -17,6 +17,7 @@ from .data.trade_journal import TradeJournal
 from .data.state_store import StateStore
 from .data.order_tracker import OrderTracker
 from .data.memory_store import MemoryStore
+from .data.state_store import StateStore
 from .utils.volatility_guard import VolatilityGuard
 from .analysis.analyzer import Analyzer
 from .utils.action_guard import ActionGuard
@@ -85,6 +86,7 @@ class TraderApp:
         self.journal = TradeJournal(self.settings.journal_path)
         self.analyzer = Analyzer(self.settings.analysis_log_path, self.settings.poll_interval_sec)
         self.memory = MemoryStore(self.settings.memory_path)
+        self.watchlist_state = StateStore(self.settings.watchlist_state_path)
         self.action_guard = None
         if self.settings.action_guard_enabled:
             self.action_guard = ActionGuard(
@@ -92,6 +94,44 @@ class TraderApp:
                 cooldown_sec=self.settings.action_cooldown_sec,
                 override_confidence=self.settings.action_override_confidence,
             )
+
+    def _load_watchlist_state(self) -> tuple[list[str], dict]:
+        state = self.watchlist_state.load()
+        watchlist = state.get("watchlist") or []
+        stats = state.get("stats") or {}
+        return watchlist, stats
+
+    def _save_watchlist_state(self, watchlist: list[str], stats: dict) -> None:
+        self.watchlist_state.save({"watchlist": watchlist, "stats": stats})
+
+    def _ensure_watchlist(self, instruments: List) -> list[str]:
+        watchlist, stats = self._load_watchlist_state()
+        all_symbols = [i.inst_id for i in instruments]
+        if not all_symbols:
+            return []
+        if not watchlist:
+            size = min(self.settings.watchlist_size, len(all_symbols))
+            watchlist = all_symbols[:size]
+            self._save_watchlist_state(watchlist, stats)
+        return watchlist
+
+    def _build_watchlist_note(self, instruments: List) -> str:
+        watchlist, stats = self._load_watchlist_state()
+        if not watchlist:
+            return ""
+        valid = [s for s in watchlist if s in {i.inst_id for i in instruments}]
+        if not valid:
+            return ""
+        sorted_watch = sorted(valid, key=lambda s: stats.get(s, {}).get("score", 0), reverse=True)
+        preferred = [s for s in sorted_watch if stats.get(s, {}).get("op", 0) > 0][:5]
+        stale = [s for s in valid if stats.get(s, {}).get("no_op", 0) >= self.settings.watchlist_rotate_no_op]
+        parts = [f"长期关注清单: {', '.join(valid)}."]
+        if preferred:
+            parts.append(f"近期更有机会关注: {', '.join(preferred)}.")
+        if stale:
+            parts.append(f"长期无机会待替换: {', '.join(stale)}.")
+        parts.append("若长期无机会可尝试替换为其他币对。")
+        return " ".join(parts)
 
     def _next_interval(self, signals: List[dict]) -> int:
         has_opportunity = False
@@ -111,21 +151,73 @@ class TraderApp:
             snapshots.append(self.exchange.get_market_snapshot(symbol))
         return snapshots
 
-    def _resolve_universe(self) -> List[str]:
+    def _resolve_universe(self, instruments: List) -> List[str]:
         if self.settings.trading_symbols:
             return self.settings.trading_symbols
 
-        instruments = self.exchange.get_instruments(
-            inst_types=self.settings.okx_inst_types,
-            limit=self.settings.okx_inst_limit,
-        )
-        return [i.inst_id for i in instruments]
+        all_symbols = [i.inst_id for i in instruments]
+        if not all_symbols:
+            return []
+
+        watchlist, stats = self._load_watchlist_state()
+        size = min(self.settings.watchlist_size, len(all_symbols))
+        if not watchlist:
+            watchlist = all_symbols[:size]
+            self._save_watchlist_state(watchlist, stats)
+            return watchlist
+
+        watchlist = [s for s in watchlist if s in all_symbols]
+        if len(watchlist) < size:
+            candidates = [s for s in all_symbols if s not in watchlist]
+            watchlist.extend(candidates[: size - len(watchlist)])
+
+        rotate_threshold = self.settings.watchlist_rotate_no_op
+        stale = [s for s in watchlist if stats.get(s, {}).get("no_op", 0) >= rotate_threshold]
+        if stale:
+            candidates = [s for s in all_symbols if s not in watchlist]
+            candidates.sort(key=lambda s: stats.get(s, {}).get("score", 0), reverse=True)
+            for old in stale:
+                if not candidates:
+                    break
+                new_symbol = candidates.pop(0)
+                idx = watchlist.index(old)
+                watchlist[idx] = new_symbol
+
+        self._save_watchlist_state(watchlist, stats)
+        return watchlist
+
+    def _update_watchlist_stats(self, signals: List) -> None:
+        watchlist, stats = self._load_watchlist_state()
+        now = int(time.time())
+        for s in signals:
+            symbol = s.symbol
+            if not symbol:
+                continue
+            entry = stats.get(symbol) or {"no_op": 0, "op": 0, "score": 0.0}
+            entry["last_seen_ts"] = now
+            if s.action in {"buy", "sell"} and s.confidence >= self.settings.opportunity_confidence:
+                entry["op"] = entry.get("op", 0) + 1
+                entry["no_op"] = 0
+                entry["score"] = entry.get("score", 0.0) + 2.0
+                entry["last_op_ts"] = now
+            else:
+                entry["no_op"] = entry.get("no_op", 0) + 1
+                entry["score"] = entry.get("score", 0.0) - 0.2
+            stats[symbol] = entry
+            if symbol not in watchlist:
+                watchlist.append(symbol)
+
+        self._save_watchlist_state(watchlist, stats)
 
     def run(self) -> None:
         self.logger.info("Trader started. Paper trading=%s", self.settings.paper_trading)
 
         if self.ws_client:
-            universe = self._resolve_universe()
+            instruments = self.exchange.get_instruments(
+                inst_types=self.settings.okx_inst_types,
+                limit=self.settings.okx_inst_limit,
+            )
+            universe = self._resolve_universe(instruments)
             if universe:
                 self.ws_client.start(universe)
 
@@ -138,12 +230,16 @@ class TraderApp:
             )
 
             last_thoughts = self.memory.load()
+            self._ensure_watchlist(instruments)
+            watch_note = self._build_watchlist_note(instruments)
+            if watch_note:
+                last_thoughts = f"{last_thoughts}\n{watch_note}" if last_thoughts else watch_note
 
             plan = self.llm.generate_plan(instruments, last_thoughts)
             if plan and plan.symbols:
                 universe = plan.symbols
             else:
-                universe = self._resolve_universe()
+                universe = self._resolve_universe(instruments)
             if not universe:
                 self.logger.warning("No instruments resolved.")
                 time.sleep(self.settings.poll_interval_sec)
@@ -199,6 +295,7 @@ class TraderApp:
             summary = self.analyzer.analyze(market, account, positions, signals, orders, plan)
             self.analyzer.report(summary)
             self.memory.save(summary.get("plan", ""))
+            self._update_watchlist_stats(signals)
 
             executions = self.executor.execute_orders(orders)
             for result in executions:

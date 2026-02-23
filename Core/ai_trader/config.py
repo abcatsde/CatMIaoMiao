@@ -62,6 +62,9 @@ class Settings:
     fast_poll_interval_sec: int = 5
     idle_poll_interval_sec: int = 30
     opportunity_confidence: float = 0.35
+    watchlist_state_path: str = "data/watchlist_state.json"
+    watchlist_size: int = 8
+    watchlist_rotate_no_op: int = 6
     journal_path: str = "data/trades.jsonl"
 
 
@@ -117,4 +120,7 @@ def load_settings() -> Settings:
         fast_poll_interval_sec=int(os.getenv("FAST_POLL_INTERVAL_SEC", "5")),
         idle_poll_interval_sec=int(os.getenv("IDLE_POLL_INTERVAL_SEC", "30")),
         opportunity_confidence=float(os.getenv("OPPORTUNITY_CONFIDENCE", "0.35")),
+        watchlist_state_path=os.getenv("WATCHLIST_STATE_PATH", "data/watchlist_state.json"),
+        watchlist_size=int(os.getenv("WATCHLIST_SIZE", "8")),
+        watchlist_rotate_no_op=int(os.getenv("WATCHLIST_ROTATE_NO_OP", "6")),
     )
