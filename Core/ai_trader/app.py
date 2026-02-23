@@ -93,6 +93,18 @@ class TraderApp:
                 override_confidence=self.settings.action_override_confidence,
             )
 
+    def _next_interval(self, signals: List[dict]) -> int:
+        has_opportunity = False
+        for s in signals:
+            action = s.get("action")
+            confidence = float(s.get("confidence", 0.0))
+            if action in {"buy", "sell"} and confidence >= self.settings.opportunity_confidence:
+                has_opportunity = True
+                break
+        if has_opportunity:
+            return max(1, self.settings.fast_poll_interval_sec)
+        return max(1, self.settings.idle_poll_interval_sec or self.settings.poll_interval_sec)
+
     def _fetch_market(self, symbols: List[str]) -> List[MarketSnapshot]:
         snapshots = []
         for symbol in symbols:
@@ -182,6 +194,8 @@ class TraderApp:
                 self.journal.write({"type": "exit", "data": result})
             orders = self.risk.apply(signals, account, positions, market, instruments)
 
+            next_interval = self._next_interval([s.__dict__ for s in signals])
+            self.analyzer.next_check_seconds = next_interval
             summary = self.analyzer.analyze(market, account, positions, signals, orders, plan)
             self.analyzer.report(summary)
             self.memory.save(summary.get("plan", ""))
@@ -190,4 +204,4 @@ class TraderApp:
             for result in executions:
                 self.journal.write({"type": "entry", "data": result})
 
-            time.sleep(self.settings.poll_interval_sec)
+            time.sleep(next_interval)

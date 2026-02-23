@@ -59,6 +59,9 @@ class Settings:
     action_override_confidence: float
 
     poll_interval_sec: int = 15
+    fast_poll_interval_sec: int = 5
+    idle_poll_interval_sec: int = 30
+    opportunity_confidence: float = 0.35
     journal_path: str = "data/trades.jsonl"
 
 
@@ -110,4 +113,8 @@ def load_settings() -> Settings:
         action_guard_path=os.getenv("ACTION_GUARD_PATH", "data/action_state.json"),
         action_cooldown_sec=int(os.getenv("ACTION_COOLDOWN_SEC", "120")),
         action_override_confidence=float(os.getenv("ACTION_OVERRIDE_CONFIDENCE", "0.8")),
+        poll_interval_sec=int(os.getenv("POLL_INTERVAL_SEC", "15")),
+        fast_poll_interval_sec=int(os.getenv("FAST_POLL_INTERVAL_SEC", "5")),
+        idle_poll_interval_sec=int(os.getenv("IDLE_POLL_INTERVAL_SEC", "30")),
+        opportunity_confidence=float(os.getenv("OPPORTUNITY_CONFIDENCE", "0.35")),
     )

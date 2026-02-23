@@ -112,6 +112,16 @@ class Analyzer:
         lines.append(f"我会在 {self.next_check_seconds} 秒后重新查看走势。")
         return "\n".join(lines)
 
+    def _build_inspection_text(self, signals: List[dict]) -> str:
+        parts = []
+        for s in signals:
+            symbol = s.get("symbol", "")
+            timeframes = s.get("timeframes") or []
+            tf_text = "/".join(timeframes) if timeframes else "?"
+            if symbol:
+                parts.append(f"{symbol}/{tf_text}")
+        return "，".join(parts)
+
     def analyze(
         self,
         market: List[MarketSnapshot],
@@ -135,7 +145,29 @@ class Analyzer:
         return summary
 
     def report(self, summary: Dict[str, Any]) -> None:
-        self.logger.info("Analysis Plan:\n%s", summary.get("plan", ""))
+        signals = summary.get("signals") or []
+        orders = summary.get("orders") or []
+        actionable = [s for s in signals if s.get("action") in {"buy", "sell"}]
+        inspection_text = self._build_inspection_text(signals)
+
+        if not actionable and not orders:
+            if inspection_text:
+                self.logger.info("查看了：%s", inspection_text)
+            else:
+                self.logger.info("暂无可用标的。")
+            self.logger.debug("Analysis Plan:\n%s", summary.get("plan", ""))
+        else:
+            action_text = "；".join(
+                f"{s.get('symbol')} {s.get('action')} 置信度{s.get('confidence', 0):.2f}"
+                for s in actionable
+            )
+            order_hint = f"（下单数 {len(orders)}）" if orders else ""
+            if action_text:
+                self.logger.info("🔥 交易机会：%s%s", action_text, order_hint)
+            if inspection_text:
+                self.logger.info("查看了：%s", inspection_text)
+            self.logger.debug("Analysis Plan:\n%s", summary.get("plan", ""))
+
         ts = datetime.now().isoformat(timespec="seconds")
         plan_text = summary.get("plan", "")
         self.file_logger.info("[%s]\n%s\n", ts, plan_text)
